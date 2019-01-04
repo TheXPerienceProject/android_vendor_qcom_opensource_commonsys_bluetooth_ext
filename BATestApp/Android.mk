@@ -2,6 +2,8 @@ ifneq ($(TARGET_HAS_LOW_RAM), true)
 LOCAL_PATH:= $(call my-dir)
 include $(CLEAR_VARS)
 
+LOCAL_MODULE_TAGS := optional
+
 LOCAL_RESOURCE_DIR += $(LOCAL_PATH)/res
 
 LOCAL_AAPT_FLAGS := --auto-add-overlay
