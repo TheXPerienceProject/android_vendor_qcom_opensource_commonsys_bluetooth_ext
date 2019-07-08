@@ -1122,15 +1122,18 @@ public final class Avrcp_ext {
                     Log.e(TAG,"invalid index for device");
                     break;
                 }
+                byte absVol = (byte) ((byte) msg.arg1 & 0x7f); // discard MSB as it is RFD
                 if (DEBUG) Log.v(TAG, "MSG_NATIVE_REQ_VOLUME_CHANGE addr: " + address);
 
                 if (((!(deviceFeatures[deviceIndex].isActiveDevice)) &&
                     (deviceFeatures[deviceIndex].mInitialRemoteVolume != -1)) ||
                     (!deviceFeatures[deviceIndex].isAbsoluteVolumeSupportingDevice)) {
+                        if (deviceFeatures[deviceIndex].isAbsoluteVolumeSupportingDevice) {
+                           deviceFeatures[deviceIndex].mRemoteVolume = absVol;
+                        }
                         if (DEBUG) Log.v(TAG, "MSG_NATIVE_REQ_VOLUME_CHANGE ignored");
                         break;
                 }
-                byte absVol = (byte) ((byte) msg.arg1 & 0x7f); // discard MSB as it is RFD
                 int absolutevol = absVol;
                 if (DEBUG)
                     Log.v(TAG, "MSG_NATIVE_REQ_VOLUME_CHANGE: volume=" + absVol + " ctype="
@@ -2790,10 +2793,19 @@ public final class Avrcp_ext {
         if (requested || ((deviceFeatures[i].mLastReportedPosition != playPositionMs) &&
              ((playPositionMs >= deviceFeatures[i].mNextPosMs) ||
              (playPositionMs <= deviceFeatures[i].mPrevPosMs))) && deviceFeatures[i].isActiveDevice) {
-            if (!requested) deviceFeatures[i].mPlayPosChangedNT = AvrcpConstants.NOTIFICATION_TYPE_CHANGED;
-            if (deviceFeatures[i].mCurrentDevice != null)
-                registerNotificationRspPlayPosNative(deviceFeatures[i].mPlayPosChangedNT,
-                   (int)playPositionMs, getByteAddress(deviceFeatures[i].mCurrentDevice));
+            if (!requested)
+                deviceFeatures[i].mPlayPosChangedNT = AvrcpConstants.NOTIFICATION_TYPE_CHANGED;
+            if (deviceFeatures[i].mCurrentDevice != null) {
+                if (!registerNotificationRspPlayPosNative(deviceFeatures[i].mPlayPosChangedNT,
+                        (int)playPositionMs, getByteAddress(deviceFeatures[i].mCurrentDevice))) {
+                    Log.w(TAG,"Fail to send rsp to remote, restore to interim if change rsp fail");
+                    if (!requested) {
+                        deviceFeatures[i].mPlayPosChangedNT =
+                                AvrcpConstants.NOTIFICATION_TYPE_INTERIM;
+                        return;
+                    }
+                }
+            }
             deviceFeatures[i].mLastReportedPosition = playPositionMs;
             if (playPositionMs != PlaybackState.PLAYBACK_POSITION_UNKNOWN) {
                 deviceFeatures[i].mNextPosMs = playPositionMs + deviceFeatures[i].mPlaybackIntervalMs;
