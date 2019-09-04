@@ -926,7 +926,7 @@ public final class Avrcp_ext {
                         }
                     } else
                         mAudioManager.avrcpSupportsAbsoluteVolume(device.getAddress(), true);
-                } else if (mDevice != null && mDevice.equals(device)) {
+                } else if (mDevice != null && Objects.equals(mDevice, device)) {
                     mAudioManager.avrcpSupportsAbsoluteVolume(device.getAddress(),
                         isAbsoluteVolumeSupported(deviceIndex));
                     Log.v(TAG,"update audio manager for abs vol state = "
@@ -1123,17 +1123,19 @@ public final class Avrcp_ext {
                 Bundle data = msg.getData();
                 byte[] bdaddr = data.getByteArray("BdAddress");
                 String address = Utils.getAddressStringFromByte(bdaddr);
-                BluetoothDevice device;
+                BluetoothDevice device, activeDevice = null;
                 Log.v(TAG, "event for device address " + address);
                 deviceIndex = getIndexForDevice(mAdapter.getRemoteDevice(address));
                 if (deviceIndex == INVALID_DEVICE_INDEX) {
                     Log.e(TAG,"invalid index for device");
                     break;
                 }
+                activeDevice = mA2dpService.getActiveDevice();
                 byte absVol = (byte) ((byte) msg.arg1 & 0x7f); // discard MSB as it is RFD
                 if (DEBUG) Log.v(TAG, "MSG_NATIVE_REQ_VOLUME_CHANGE addr: " + address);
 
-                if (((!(deviceFeatures[deviceIndex].isActiveDevice)) &&
+                if (((!(activeDevice != null
+                    && Objects.equals(deviceFeatures[deviceIndex].mCurrentDevice, activeDevice))) &&
                     (deviceFeatures[deviceIndex].mInitialRemoteVolume != -1)) ||
                     (!deviceFeatures[deviceIndex].isAbsoluteVolumeSupportingDevice)) {
                         if (deviceFeatures[deviceIndex].isAbsoluteVolumeSupportingDevice) {
@@ -1229,8 +1231,9 @@ public final class Avrcp_ext {
                     deviceFeatures[deviceIndex].mInitialRemoteVolume = absVol;
                     //Avoid fluctuation of volume during device added in blacklist
                     // use send setAbsolute volume for blacklisted volume
-                    if(deviceFeatures[deviceIndex].mBlackListVolume != -1 &&
-                       deviceFeatures[deviceIndex].isActiveDevice) {
+                    if (deviceFeatures[deviceIndex].mBlackListVolume != -1 &&
+                       activeDevice != null &&
+                       Objects.equals(activeDevice, deviceFeatures[deviceIndex].mCurrentDevice)) {
                         resetBlackList(address);
                         if (DEBUG) Log.v(TAG, "remote initial volume as audio stream volume : " +
                             deviceFeatures[deviceIndex].mBlackListVolume);
@@ -1242,7 +1245,8 @@ public final class Avrcp_ext {
                         deviceFeatures[deviceIndex].mLocalVolume = deviceFeatures[deviceIndex].mBlackListVolume;
                         deviceFeatures[deviceIndex].mBlackListVolume = -1;
                         break;
-                    } else if (deviceFeatures[deviceIndex].isActiveDevice) {
+                    } else if (activeDevice != null &&
+                          Objects.equals(activeDevice, deviceFeatures[deviceIndex].mCurrentDevice)) {
                         /*Avoid send set absolute volume for store volume untill volume registration
                         complete and making synchronization to send only one setAbsolute volume
                         during connection*/
@@ -1283,7 +1287,8 @@ public final class Avrcp_ext {
                         break;
                     }
                     /* If the volume has successfully changed */
-                    if (device != null && !deviceFeatures[deviceIndex].isActiveDevice &&
+                    if (device != null && !(activeDevice != null &&
+                           Objects.equals(activeDevice, deviceFeatures[deviceIndex].mCurrentDevice)) &&
                            (msg.arg2 == AVRC_RSP_CHANGED || msg.arg2 == AVRC_RSP_INTERIM)) {
                         Log.d(TAG, "Do not change volume from an inactive device");
                         break;
@@ -1343,10 +1348,12 @@ public final class Avrcp_ext {
                 if (DEBUG) Log.v(TAG, "MSG_SET_ABSOLUTE_VOLUME");
 
                 int avrcpVolume = convertToAvrcpVolume(msg.arg1);
+                BluetoothDevice activeDevice = null;
                 avrcpVolume = Math.min(AVRCP_MAX_VOL, Math.max(0, avrcpVolume));
                 for (int i = 0; i < maxAvrcpConnections; i++) {
-                    if (deviceFeatures[i].mCurrentDevice != null &&
-                            deviceFeatures[i].isActiveDevice && deviceFeatures[i].isAbsoluteVolumeSupportingDevice) {
+                    if (deviceFeatures[i].mCurrentDevice != null && activeDevice != null &&
+                            Objects.equals(activeDevice, deviceFeatures[deviceIndex].mCurrentDevice) &&
+                            deviceFeatures[i].isAbsoluteVolumeSupportingDevice) {
 
                           deviceIndex = i;
 
@@ -1668,8 +1675,16 @@ public final class Avrcp_ext {
                 if (bt_device != null && bt_device.isTwsPlusDevice()) {
                     for (int i = 0; i < maxAvrcpConnections; i++) {
                         if (deviceFeatures[i].mCurrentDevice != null &&
-                                deviceFeatures[i].isActiveDevice &&
-                                deviceFeatures[i].mCurrentDevice.isTwsPlusDevice()) {
+                            deviceFeatures[i].mCurrentDevice.isTwsPlusDevice() &&
+                            ((!deviceFeatures[i].isActiveDevice &&
+                            !Objects.equals(bt_device, deviceFeatures[i].mCurrentDevice)) ||
+                            (deviceFeatures[i].isActiveDevice &&
+                             Objects.equals(bt_device, deviceFeatures[i].mCurrentDevice)))) {
+                            /* If bt_device is already active then it is active device swithc
+                            ** between TWS+ device.
+                            ** If bt_device is not active and other TWS+ pair is not active then
+                            ** it is a new connection
+                            */
                             tws_switch = true;
                         }
                     }
@@ -1703,8 +1718,15 @@ public final class Avrcp_ext {
                     }
                 }
                 if (bt_device.isTwsPlusDevice() && !tws_switch) {
-                    Log.d(TAG,"Restting mTwsPairDisconnected at index " + deviceIndex);
+                    Log.d(TAG,"Reseting mTwsPairDisconnected at index " + deviceIndex);
                     deviceFeatures[deviceIndex].mTwsPairDisconnected = false;
+                    for (int i = 0; i < maxAvrcpConnections; i++) {
+                        if (i != deviceIndex && deviceFeatures[i].mCurrentDevice != null &&
+                            deviceFeatures[i].mCurrentDevice.isTwsPlusDevice()) {
+                            deviceFeatures[i].mTwsPairDisconnected = false;
+                            break;
+                        }
+                    }
                 }
                 if (maxAvrcpConnections > 1) {
                     for (int i = 0; i < maxAvrcpConnections; i++) {
@@ -2248,7 +2270,7 @@ public final class Avrcp_ext {
                 for (int i = 0; i < maxAvrcpConnections; i++) {
                     if (device != null && deviceFeatures[i].mCurrentDevice != null) {
                         if ((isPlaying != isPlayingState(deviceFeatures[i].mCurrentPlayState)) &&
-                            (device.equals(deviceFeatures[i].mCurrentDevice))) {
+                            (Objects.equals(deviceFeatures[i].mCurrentDevice, device))) {
                             updateA2dpPlayState = true;
                             deviceFeatures[i].mLastStateUpdate = SystemClock.elapsedRealtime();
                         }
@@ -2389,7 +2411,7 @@ public final class Avrcp_ext {
         if (updateA2dpPlayState && newState != null && newState.getState() == PlaybackState.STATE_PLAYING) {
             for (int i = 0; i < maxAvrcpConnections; i++) {
                 if (device != null && (deviceFeatures[i].mCurrentDevice != null) &&
-                          device.equals(deviceFeatures[i].mCurrentDevice))
+                          Objects.equals(deviceFeatures[i].mCurrentDevice, device))
                     sendPlayPosNotificationRsp(false, i);
             }
         }
@@ -2894,9 +2916,10 @@ public final class Avrcp_ext {
 
  public boolean isAbsoluteVolumeSupported() {
         boolean status = false;
+        BluetoothDevice activeDevice = mA2dpService.getActiveDevice();
         for (int i = 0; i < maxAvrcpConnections; i++) {
-            if (deviceFeatures[i].mCurrentDevice != null &&
-                    deviceFeatures[i].isActiveDevice) {
+            if (deviceFeatures[i].mCurrentDevice != null && activeDevice != null &&
+                    Objects.equals(deviceFeatures[i].mCurrentDevice, activeDevice)) {
                 if ((deviceFeatures[i].mFeatures &
                         BTRC_FEAT_ABSOLUTE_VOLUME) != 0) {
                     status = true;
@@ -3361,7 +3384,7 @@ public final class Avrcp_ext {
         BluetoothDevice active_device = null;
         for (int i = 0; i < maxAvrcpConnections; i++) {
             if (deviceFeatures[i].mCurrentDevice != null) {
-                if(deviceFeatures[i].mCurrentDevice.equals(device)) {
+                if(device != null && Objects.equals(deviceFeatures[i].mCurrentDevice, device)) {
                     Log.v(TAG,"device is already added in connected list, ignore now");
                     return;
                 }
@@ -3447,8 +3470,8 @@ public final class Avrcp_ext {
                     }
                 }
             }
-            else if (deviceFeatures[i].mCurrentDevice != null &&
-                    !(deviceFeatures[i].mCurrentDevice.equals(device)) &&
+            else if (deviceFeatures[i].mCurrentDevice != null && device != null &&
+                    !(Objects.equals(deviceFeatures[i].mCurrentDevice, device)) &&
                     deviceFeatures[i].isActiveDevice &&
                     !isTwsPlusPair(deviceFeatures[i].mCurrentDevice, device)) {
                 deviceFeatures[i].isActiveDevice = false;
@@ -3459,9 +3482,10 @@ public final class Avrcp_ext {
         //validating device is connected
         int index = getIndexForDevice(device);
         if (index != INVALID_DEVICE_INDEX && mDevice != null &&
-            (mDevice.equals(deviceFeatures[index].mCurrentDevice) ||
+            (Objects.equals(mDevice, deviceFeatures[index].mCurrentDevice) ||
              (mDevice.isTwsPlusDevice() && device.isTwsPlusDevice()))) {
-            setActiveDevice(mDevice);
+            setActiveDevice(deviceFeatures[index].mCurrentDevice);
+            //setActiveDevice(mDevice);
             //below line to send setAbsolute volume if device is suporting absolute volume
             //When A2dp playing on DUT and Remote got connected, send proper playstatus
             if (isPlayingState(mCurrentPlayerState) &&
@@ -3480,8 +3504,8 @@ public final class Avrcp_ext {
     public void setAvrcpDisconnectedDevice(BluetoothDevice device) {
         Log.i(TAG,"Enter setAvrcpDisconnectedDevice");
         for (int i = 0; i < maxAvrcpConnections; i++ ) {
-            if (deviceFeatures[i].mCurrentDevice !=null &&
-                    deviceFeatures[i].mCurrentDevice.equals(device)) {
+            if (deviceFeatures[i].mCurrentDevice !=null && device != null &&
+                    Objects.equals(deviceFeatures[i].mCurrentDevice, device)) {
                 if (deviceFeatures[i].isActiveDevice &&
                       deviceFeatures[i].isAbsoluteVolumeSupportingDevice) {
                     storeVolumeForDevice(device);
@@ -3501,8 +3525,8 @@ public final class Avrcp_ext {
                device which is left supporting absolute
                volume as active device
             */
-            if (deviceFeatures[i].mCurrentDevice != null &&
-                    !(deviceFeatures[i].mCurrentDevice.equals(device))) {
+            if (deviceFeatures[i].mCurrentDevice != null && device != null &&
+                    !(Objects.equals(deviceFeatures[i].mCurrentDevice, device))) {
                 Log.i(TAG,"setAvrcpDisconnectedDevice : Active device changed to index = " + i);
                 if (device.isTwsPlusDevice() &&
                     isTwsPlusPair(device,deviceFeatures[i].mCurrentDevice )) {
@@ -3520,7 +3544,7 @@ public final class Avrcp_ext {
             mAudioManager.avrcpSupportsAbsoluteVolume(device.getAddress(), true);
         }
 
-        if (mBrowsingActiveDevice != null && device.equals(mBrowsingActiveDevice)) {
+        if (mBrowsingActiveDevice != null && Objects.equals(mBrowsingActiveDevice, device)) {
             Log.w(TAG,"setAvrcpDisconnect: Browse active device disconned reset it");
             mBrowsingActiveDevice = null;
         }
@@ -3724,7 +3748,7 @@ public final class Avrcp_ext {
         mCurrentBrowsingDevice = mAdapter.getRemoteDevice(address);
         // checking for error cases
         BluetoothDevice device = BluetoothAdapter.getDefaultAdapter().getRemoteDevice(bdaddr);
-        if (mBrowsingActiveDevice != null && !device.equals(mBrowsingActiveDevice)) {
+        if (mBrowsingActiveDevice != null && !Objects.equals(mBrowsingActiveDevice, device)) {
             status = AvrcpConstants_ext.RSP_INTERNAL_ERR;
             Log.w(TAG, "setBrowsedPlayer: Cmd from browse inactive device reject it");
         } else if (mMediaPlayerInfoList.isEmpty()) {
@@ -4433,7 +4457,7 @@ public final class Avrcp_ext {
 
         /* Browsed player is already set */
         if (folderObj.mScope == AvrcpConstants_ext.BTRC_SCOPE_FILE_SYSTEM) {
-            if (mBrowsingActiveDevice != null && !device.equals(mBrowsingActiveDevice)) {
+            if (mBrowsingActiveDevice != null && !Objects.equals(mBrowsingActiveDevice, device)) {
                 Log.e(TAG, "handleGetFolderItemBrowse: Cmd from browse inactive device, reject it");
                 getFolderItemsRspNative(bdaddr, AvrcpConstants_ext.RSP_INTERNAL_ERR, (short) 0,
                         (byte) 0x00, 0, null, null, null, null, null, null, null, null);
@@ -4491,7 +4515,7 @@ public final class Avrcp_ext {
             return;
         }
 
-        if (mBrowsingActiveDevice != null && !device.equals(mBrowsingActiveDevice)) {
+        if (mBrowsingActiveDevice != null && !Objects.equals(mBrowsingActiveDevice, device)) {
             Log.w(TAG, "play item Cmd from browse inactive device, reject it");
             playItemRspNative(bdaddr, AvrcpConstants_ext.RSP_INTERNAL_ERR);
             return;
@@ -4525,7 +4549,7 @@ public final class Avrcp_ext {
         }
         BluetoothDevice device =
                 BluetoothAdapter.getDefaultAdapter().getRemoteDevice(itemAttr.mAddress);
-        if (mBrowsingActiveDevice != null && !device.equals(mBrowsingActiveDevice)) {
+        if (mBrowsingActiveDevice != null && !Objects.equals(mBrowsingActiveDevice, device)) {
             Log.e(TAG, "Item attributes from browse inactive device, reject it");
             getItemAttrRspNative(
                     itemAttr.mAddress, AvrcpConstants_ext.RSP_INTERNAL_ERR, (byte) 0, null, null);
@@ -4552,7 +4576,7 @@ public final class Avrcp_ext {
 
     private void handleGetTotalNumOfItemsResponse(byte[] bdaddr, byte scope) {
         BluetoothDevice device = BluetoothAdapter.getDefaultAdapter().getRemoteDevice(bdaddr);
-        if (mBrowsingActiveDevice != null && !device.equals(mBrowsingActiveDevice)) {
+        if (mBrowsingActiveDevice != null && !Objects.equals(mBrowsingActiveDevice, device)) {
             getTotalNumOfItemsRspNative(bdaddr, AvrcpConstants_ext.RSP_INTERNAL_ERR, 0, 0);
             Log.w(TAG, "GetTotalNumOfItems: Cmd from browse inactive device reject it");
             return;
@@ -5134,8 +5158,8 @@ public final class Avrcp_ext {
 
     private int getIndexForDevice(BluetoothDevice device) {
         for (int i = 0; i < maxAvrcpConnections; i++) {
-            if (deviceFeatures[i].mCurrentDevice != null &&
-                    deviceFeatures[i].mCurrentDevice.equals(device)) {
+            if (deviceFeatures[i].mCurrentDevice != null && device != null &&
+                    Objects.equals(deviceFeatures[i].mCurrentDevice, device)) {
                 Log.i(TAG,"device found at index " + i);
                 return i;
             }
