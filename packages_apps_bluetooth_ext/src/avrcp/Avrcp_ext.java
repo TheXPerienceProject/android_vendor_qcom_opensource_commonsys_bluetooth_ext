@@ -76,6 +76,7 @@ import com.android.bluetooth.R;
 import com.android.bluetooth.Utils;
 import com.android.bluetooth.avrcpcontroller.AvrcpControllerService;
 import com.android.bluetooth.ReflectionUtils;
+import com.android.bluetooth.hearingaid.HearingAidService;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -197,6 +198,12 @@ public final class Avrcp_ext {
        "Audi",
        "Porsche"
     };
+
+
+    private static final ArrayList<String> playerBrowseWhiteListDB =
+       new ArrayList<String>(Arrays.asList(
+               "com.google.android.music"
+    ));
 
     /* UID counter to be shared across different files. */
     static short sUIDCounter = AvrcpConstants_ext.DEFAULT_UID_COUNTER;
@@ -2109,6 +2116,11 @@ public final class Avrcp_ext {
                 String CurrentPackageName = (mMediaController != null) ? mMediaController.getPackageName():null;
                 artistName = stringOrBlank(data.getString(MediaMetadata.METADATA_KEY_ARTIST));
                 albumName = stringOrBlank(data.getString(MediaMetadata.METADATA_KEY_ALBUM));
+                if (albumName.isEmpty()) {
+                  albumName =
+                      stringOrBlank(data.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST));
+                  Log.d(TAG,"overwrite album_artist :" + albumName + "if album is blank");
+                }
                 if (CurrentPackageName != null && !(CurrentPackageName.equals("com.android.music"))) {
                     mediaNumber = longStringOrBlank((data.getLong(MediaMetadata.METADATA_KEY_TRACK_NUMBER)));
                 } else {
@@ -2118,7 +2130,7 @@ public final class Avrcp_ext {
                 mediaTotalNumber = longStringOrBlank(data.getLong(MediaMetadata.METADATA_KEY_NUM_TRACKS));
                 genre = stringOrBlank(data.getString(MediaMetadata.METADATA_KEY_GENRE));
                 playingTimeMs = data.getLong(MediaMetadata.METADATA_KEY_DURATION);
-                if (DEBUG) Log.d(TAG," albumName :" + albumName + " device :" + device);
+                Log.d(TAG," albumName :" + albumName + " device :" + device);
                 if (mAvrcpBipRsp != null && device != null)
                     coverArt = stringOrBlank(mAvrcpBipRsp.getImgHandle(device, albumName));
                 else coverArt = stringOrBlank(null);
@@ -2346,34 +2358,45 @@ public final class Avrcp_ext {
                     deviceFeatures[index].mReportedPlayerID != mCurrAddrPlayerID) {
                 Log.v(TAG, "Update player id: " + deviceFeatures[index].mReportedPlayerID +
                         "-> " + mCurrAddrPlayerID);
-                mPlayerSwitching = true;
-                if (deviceFeatures[index].mAvailablePlayersChangedNT ==
-                        AvrcpConstants_ext.NOTIFICATION_TYPE_INTERIM) {
-                    registerNotificationRspAvalPlayerChangedNative(
-                            AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED, addr);
-                    mAvailablePlayerViewChanged = false;
-                    deviceFeatures[index].mAvailablePlayersChangedNT =
+                String currPkg = getPackageName(mCurrAddrPlayerID);
+                String prevPkg = getPackageName(deviceFeatures[index].mReportedPlayerID);
+                if ((currPkg != null && !currPkg.isEmpty() &&
+                        playerBrowseWhiteListDB.contains(currPkg))
+                        || (prevPkg != null && !prevPkg.isEmpty() &&
+                        playerBrowseWhiteListDB.contains(prevPkg))) {
+                    if (deviceFeatures[index].mAvailablePlayersChangedNT ==
+                                AvrcpConstants_ext.NOTIFICATION_TYPE_INTERIM) {
+                        registerNotificationRspAvalPlayerChangedNative(
+                                AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED, addr);
+                        mAvailablePlayerViewChanged = false;
+                        deviceFeatures[index].mAvailablePlayersChangedNT =
+                                AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
+                    }
+                    if (deviceFeatures[index].mAddrPlayerChangedNT ==
+                                AvrcpConstants_ext.NOTIFICATION_TYPE_INTERIM) {
+                        registerNotificationRspAddrPlayerChangedNative(
+                                AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED, mCurrAddrPlayerID,
+                                sUIDCounter, addr);
+                        deviceFeatures[index].mAddrPlayerChangedNT =
+                                AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
+                    }
+
+                    // Update the now playing list without sending the notification
+                    deviceFeatures[index].mNowPlayingListChangedNT =
                             AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
-                }
-                if (deviceFeatures[index].mAddrPlayerChangedNT ==
-                        AvrcpConstants_ext.NOTIFICATION_TYPE_INTERIM) {
-                    registerNotificationRspAddrPlayerChangedNative(
-                            AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED, mCurrAddrPlayerID,
-                            sUIDCounter, addr);
-                    deviceFeatures[index].mAddrPlayerChangedNT =
-                            AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
+                    mAddressedMediaPlayer.updateNowPlayingList(mMediaController);
+                    deviceFeatures[index].mNowPlayingListChangedNT =
+                            AvrcpConstants_ext.NOTIFICATION_TYPE_INTERIM;
                 }
                 deviceFeatures[index].mReportedPlayerID = mCurrAddrPlayerID;
-
-                // Update the now playing list without sending the notification
-                deviceFeatures[index].mNowPlayingListChangedNT = AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
-                mAddressedMediaPlayer.updateNowPlayingList(mMediaController);
-                deviceFeatures[index].mNowPlayingListChangedNT = AvrcpConstants_ext.NOTIFICATION_TYPE_INTERIM;
             }
 
             // Dont send now playing list changed if the player doesn't support browsing
             MediaPlayerInfo_ext info = getAddressedPlayerInfo();
-            if (info != null && info.isBrowseSupported()) {
+            String pkg = (info != null) ? info.getPackageName():"";
+            boolean isPlayerInBrowseList = (pkg != null) && (!pkg.isEmpty()) &&
+                    playerBrowseWhiteListDB.contains(pkg);
+            if (isPlayerInBrowseList) {
                 Log.v(TAG, "Check if NowPlayingList is updated");
                 mAddressedMediaPlayer.updateNowPlayingList(mMediaController);
             }
@@ -2674,8 +2697,12 @@ public final class Avrcp_ext {
             deviceFeatures[deviceIndex].mTrackChangedNT = AvrcpConstants_ext.NOTIFICATION_TYPE_INTERIM;
 
         byte[] byteAddr = getByteAddress(deviceFeatures[deviceIndex].mCurrentDevice);
+        MediaPlayerInfo_ext info = getAddressedPlayerInfo();
+        String currPkg = (info != null) ? info.getPackageName():"";
+        boolean isPlayerInBrowseList = (currPkg != null) && (!currPkg.isEmpty()) &&
+                playerBrowseWhiteListDB.contains(currPkg);
         // for non-browsable players or no player
-        if (!isPlayerInBrowseList() ||
+        if (!isPlayerInBrowseList ||
                 (deviceFeatures[deviceIndex].mFeatures & BTRC_FEAT_BROWSE) == 0) {
             byte[] track = AvrcpConstants_ext.TRACK_IS_SELECTED;
             if (!mMediaAttributes.exists) track = AvrcpConstants_ext.NO_TRACK_SELECTED;
@@ -3801,7 +3828,7 @@ public final class Avrcp_ext {
             if (!isPackageNameValid(browsedPackage)) {
                 Log.w(TAG, " Invalid package for id:" + mCurrBrowsePlayerID);
                 status = AvrcpConstants_ext.RSP_INV_PLAYER;
-            } else if (!isBrowseSupported(browsedPackage)) {
+            } else if (!playerBrowseWhiteListDB.contains(browsedPackage)) {
                 Log.w(TAG, "Browse unsupported for id:" + mCurrBrowsePlayerID
                         + ", packagename : " + browsedPackage);
                 status = AvrcpConstants_ext.RSP_PLAY_NOT_BROW;
@@ -4377,8 +4404,8 @@ public final class Avrcp_ext {
                     String browsedPackage = getPackageName(mCurrAddrPlayerID);
                     BrowsedMediaPlayer_ext player =
                             mAvrcpBrowseManager.getBrowsedMediaPlayer(dummyaddr);
-                    if ((player != null) && (!browsedPackage.isEmpty()) &&
-                            player.isPackageInMBSList(browsedPackage)) {
+                    String currPkg = (info != null) ? info.getPackageName():"";
+                    if (playerBrowseWhiteListDB.contains(currPkg)) {
                         for (int numBit = 0; numBit < featureBits.length; numBit++) {
                             /* gives which octet this belongs to */
                             byte octet = (byte) (featureBits[numBit] / 8);
@@ -5160,15 +5187,9 @@ public final class Avrcp_ext {
                 return;
             }
 
-            if (!isPlayerInBrowseList() && !mPlayerSwitching) {
-                Log.e(TAG,"Disallow sending changed response to non Browsable Players");
-                return;
-            }
-
             if (!registerNotificationRspNowPlayingChangedNative(type, addr)) {
                 Log.e(TAG, "registerNotificationRspNowPlayingChangedNative failed!");
             }
-            mPlayerSwitching = false;
             mNowPlayingListChangedNT = AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
         }
 
@@ -5250,12 +5271,23 @@ public final class Avrcp_ext {
         int storeVolume =  mAudioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
         Log.i(TAG, "storeVolume: Storing stream volume level for device " + device
                 + " : " + storeVolume);
-        if (index != INVALID_DEVICE_INDEX && deviceFeatures[index].isAbsoluteVolumeSupportingDevice &&
-           (mAbsVolThreshold > 0 && mAbsVolThreshold < mAudioStreamMax &&
-           storeVolume > mAbsVolThreshold)) {
+
+        List<BluetoothDevice> HAActiveDevices = null;
+        HearingAidService mHaService = HearingAidService.getHearingAidService();
+        if (mHaService != null) {
+          HAActiveDevices = mHaService.getActiveDevices();
+        }
+        if (HAActiveDevices != null && (HAActiveDevices.get(0) != null
+                || HAActiveDevices.get(1) != null)) {
+          Log.d(TAG, "Do not store volume when Hearing Aid device is active");
+          return;
+        }
+
+        if (mAbsVolThreshold > 0 && mAbsVolThreshold < mAudioStreamMax &&
+           storeVolume > mAbsVolThreshold) {
             if (DEBUG) Log.v(TAG, "remote store volume too high" + storeVolume + ">" +
                mAbsVolThreshold);
-                storeVolume = mAbsVolThreshold;
+            storeVolume = mAbsVolThreshold;
         }
         if (index == INVALID_DEVICE_INDEX && disconnectedActiveDevice != null &&
             disconnectedActiveDevice.equals(device)) {
