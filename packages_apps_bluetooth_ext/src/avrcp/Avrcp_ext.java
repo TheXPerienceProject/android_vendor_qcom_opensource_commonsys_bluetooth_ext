@@ -183,11 +183,13 @@ public final class Avrcp_ext {
                         (byte)0xCE, (byte)0xFA, (byte)0xCE};
     private static final String playerStateUpdateBlackListedAddr[] = {
          "BC:30:7E", //bc-30-7e-5e-f6-27, Name: Porsche BT 0310; bc-30-7e-8c-22-cb, Name: Audi MMI 1193
+         "2C:DC:AD", //2C-DC-AD-BB-2F-25, Name: PORSCHE
          "00:1E:43", //00-1e-43-14-f0-68, Name: Audi MMI 4365
          "9C:DF:03", //9C:DF:03:D3:C0:17, Name: Benz S600L
          "00:0A:08",  //00:0A:08:51:1E:E7, Name: BMW530
          "00:04:79", //00-04-79-00-06-bc, Name: radius HP-BTL01
          "28:A1:83", //28-A1-83-94-90-AE, Name: VW Radio
+         "30:c3:d9", //30-c3-d9-8d-5b-83, Name: VW RadioBin
      };
     private static final String playerStateUpdateBlackListedNames[] = {
        "Audi",
@@ -199,6 +201,11 @@ public final class Avrcp_ext {
        new ArrayList<String>(Arrays.asList(
                "com.google.android.music"
     ));
+
+    private static final String nonMediaAppsBlacklistedNames[] = {
+       "telecom",
+       "skype"
+    };
 
     /* UID counter to be shared across different files. */
     static short sUIDCounter = AvrcpConstants_ext.DEFAULT_UID_COUNTER;
@@ -816,6 +823,18 @@ public final class Avrcp_ext {
         }
         return false;
     };
+
+    private boolean isAppBlackListedForMediaSessionUpdate(String appName) {
+        if (appName == null) return false;
+        for (int j = 0; j < nonMediaAppsBlacklistedNames.length; j++) {
+            String name = nonMediaAppsBlacklistedNames[j];
+            if (appName.toLowerCase().contains(name.toLowerCase())) {
+                Log.d(TAG, "AVRCP non Media app BL for media session update: " + appName);
+                return true;
+            }
+        }
+        return false;
+    };
     /** Handles Avrcp messages. */
     private final class AvrcpMessageHandler extends Handler {
         private AvrcpMessageHandler(Looper looper) {
@@ -1328,11 +1347,6 @@ public final class Avrcp_ext {
                      * retry a volume one step up/down */
                     if (DEBUG) Log.d(TAG, "Remote device didn't tune volume, let's try one more step.");
                     /* direction calculation for retry mechanism */
-                    if(convertToAudioStreamVolume(deviceFeatures[deviceIndex].mLastRemoteVolume)
-                        < deviceFeatures[deviceIndex].mLocalVolume)
-                        deviceFeatures[deviceIndex].mLastDirection = -1;
-                    else
-                        deviceFeatures[deviceIndex].mLastDirection = 1;
                     int retry_volume = Math.min(AVRCP_MAX_VOL,
                             Math.max(0, deviceFeatures[deviceIndex].mLastRemoteVolume +
                                         deviceFeatures[deviceIndex].mLastDirection));
@@ -1343,7 +1357,6 @@ public final class Avrcp_ext {
                             0, 0, deviceFeatures[deviceIndex].mCurrentDevice), CMD_TIMEOUT_DELAY);
                         deviceFeatures[deviceIndex].mVolCmdAdjustInProgress = true;
                     }
-                    deviceFeatures[deviceIndex].mLastDirection = 0;
                 } else if (msg.arg2 == AVRC_RSP_REJ) {
                     if (DEBUG)
                         Log.v(TAG, "setAbsoluteVolume call rejected");
@@ -1393,6 +1406,10 @@ public final class Avrcp_ext {
                                    CMD_TIMEOUT_DELAY);
                               deviceFeatures[deviceIndex].mVolCmdSetInProgress = true;
                               deviceFeatures[deviceIndex].mLastRemoteVolume = avrcpVolume;
+                              if(deviceFeatures[deviceIndex].mLastLocalVolume >  msg.arg1)
+                                  deviceFeatures[deviceIndex].mLastDirection = -1;
+                              else
+                                  deviceFeatures[deviceIndex].mLastDirection = 1;
                               deviceFeatures[deviceIndex].mLastLocalVolume = msg.arg1;
                               deviceFeatures[deviceIndex].mLastRequestedVolume = -1;
                          } else {
@@ -3857,8 +3874,8 @@ public final class Avrcp_ext {
             updateCurrentController(0, mCurrBrowsePlayerID);
             return;
         }
-        if (packageName.equals("com.android.server.telecom")) {
-            Log.d(TAG, "Ignore addressed media session change to telecom");
+        if (isAppBlackListedForMediaSessionUpdate(packageName)) {
+            Log.d(TAG, "Ignore addressed media session change to " + packageName);
             return;
         }
         // No change.
@@ -3893,9 +3910,8 @@ public final class Avrcp_ext {
     private void setActiveMediaSession(MediaSession.Token token) {
         android.media.session.MediaController activeController =
                 new android.media.session.MediaController(mContext, token);
-        if ((activeController.getPackageName().contains("telecom")) ||
-           (activeController.getPackageName().contains("skype"))) {
-            Log.d(TAG, "Ignore active media session change to telecom/skype");
+        if (isAppBlackListedForMediaSessionUpdate(activeController.getPackageName())) {
+            Log.d(TAG, "Ignore active media session change to " + activeController.getPackageName());
             return;
         }
 
@@ -3921,7 +3937,7 @@ public final class Avrcp_ext {
 
     private void setActiveMediaSession(android.media.session.MediaController mController) {
         HeadsetService mService = HeadsetService.getHeadsetService();
-        if (mController.getPackageName().contains("telecom")) {
+        if (isAppBlackListedForMediaSessionUpdate(mController.getPackageName())) {
             if (mService != null && mService.isScoOrCallActive()) {
                 Log.w(TAG, "Ignore media session during call");
                 return;
@@ -4085,8 +4101,8 @@ public final class Avrcp_ext {
         int updateId = -1;
         boolean updated = false;
         boolean currentRemoved = false;
-        if (info.getPackageName().equals("com.android.server.telecom")) {
-            Log.d(TAG, "Skip adding telecom to the media player info list");
+        if (isAppBlackListedForMediaSessionUpdate(info.getPackageName())) {
+            Log.d(TAG, "Skip adding to the media player info list " + info.getPackageName());
             return updated;
         }
         synchronized (this) {
